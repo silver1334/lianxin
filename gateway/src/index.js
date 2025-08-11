@@ -335,7 +335,6 @@ app.use((err, req, res, next) => {
 // Graceful shutdown
 const gracefulShutdown = (signal) => {
   logger.info(`Received ${signal}, shutting down gracefully`);
-
   process.exit(0);
 };
 
@@ -343,7 +342,7 @@ process.on("SIGTERM", () => gracefulShutdown("SIGTERM"));
 process.on("SIGINT", () => gracefulShutdown("SIGINT"));
 
 // Start server
-app.listen(PORT, () => {
+const server = app.listen(PORT, () => {
   logger.info(`API Gateway started on port ${PORT}`, {
     port: PORT,
     environment: process.env.NODE_ENV || "development",
@@ -351,5 +350,21 @@ app.listen(PORT, () => {
     services: Object.keys(services),
   });
 });
+
+// Enhanced graceful shutdown
+const gracefulShutdown = (signal) => {
+  logger.info(`Received ${signal}, shutting down gracefully`);
+  
+  server.close(() => {
+    logger.info('HTTP server closed');
+    process.exit(0);
+  });
+  
+  // Force close after 10 seconds
+  setTimeout(() => {
+    logger.error('Could not close connections in time, forcefully shutting down');
+    process.exit(1);
+  }, 10000);
+};
 
 module.exports = app;
