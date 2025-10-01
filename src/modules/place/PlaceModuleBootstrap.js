@@ -1,38 +1,46 @@
 const express = require('express');
+const DependencyContainer = require('../../infrastructure/config/DependencyContainer');
+
+// Infrastructure Adapters
+const PlaceMySQLAdapter = require('./infrastructure/persistence/PlaceMySQLAdapter');
+
+// Database Setup
+const placeDatabaseSetup = require('./infrastructure/persistence/models');
 
 /**
- * Place Module
- * Bounded Context for Place Management using Hexagonal Architecture
+ * Place Module Bootstrap
+ * Self-contained bootstrap for the Place bounded context
  */
-class PlaceModule {
+class PlaceModuleBootstrap {
   constructor() {
     this.name = 'PlaceModule';
-    this.isInitialized = false;
-    this.dependencies = {};
-    this.adapters = {};
-    this.services = {};
-    this.controllers = {};
+    this.container = new DependencyContainer();
     this.router = express.Router();
+    this.isInitialized = false;
+    this.database = null;
+    this.controllers = {};
+    this.services = {};
   }
 
   /**
    * Initialize the Place Module
    */
-  async initialize(dependencies) {
+  async initialize(globalContainer) {
     if (this.isInitialized) {
       return this;
     }
 
     try {
-      this.dependencies = dependencies;
+      console.log('Initializing Place Module...');
 
-      // Initialize adapters
-      await this._initializeAdapters();
+      // Initialize database
+      await this._initializeDatabase();
 
-      // Initialize services
+      // Configure dependencies
+      await this._configureDependencies(globalContainer);
+
+      // Initialize services and controllers
       await this._initializeServices();
-
-      // Initialize controllers
       await this._initializeControllers();
 
       // Setup routes
@@ -69,8 +77,8 @@ class PlaceModule {
     }
 
     try {
-      // Check database connectivity if place module has its own DB
-      const dbHealth = await this.dependencies.database.testConnection();
+      // Test database connection
+      const dbHealth = await this.database.testConnection();
 
       return {
         status: dbHealth ? 'healthy' : 'unhealthy',
@@ -79,7 +87,7 @@ class PlaceModule {
         capabilities: {
           placeManagement: true,
           placeSearch: true,
-          placeReviews: true,
+          locationBasedSearch: true,
           placeCategories: true
         }
       };
@@ -93,81 +101,54 @@ class PlaceModule {
   }
 
   /**
-   * Check if module is ready
-   */
-  isReady() {
-    return this.isInitialized;
-  }
-
-  /**
-   * Get module status
-   */
-  getStatus() {
-    return {
-      name: this.name,
-      initialized: this.isInitialized,
-      ready: this.isReady(),
-      capabilities: {
-        placeManagement: true,
-        placeSearch: true,
-        placeReviews: true
-      }
-    };
-  }
-
-  /**
    * Shutdown module
    */
   async shutdown() {
     console.log('Shutting down Place Module...');
-    this.isInitialized = false;
+    
+    try {
+      if (this.database) {
+        await this.database.shutdown();
+      }
+      
+      this.container.clear();
+      this.isInitialized = false;
+      
+      console.log('Place Module shut down successfully');
+    } catch (error) {
+      console.error('Error during Place Module shutdown:', error);
+      throw error;
+    }
   }
 
   // Private initialization methods
-  async _initializeAdapters() {
-    // Cache adapter for place data
-    this.adapters.cache = this.dependencies.cacheAdapter;
+  async _initializeDatabase() {
+    this.database = await placeDatabaseSetup.initialize();
+    console.log('Place Module database initialized');
+  }
 
-    // Mock place repository (replace with real implementation)
-    this.adapters.placeRepository = {
-      findById: async (id) => {
-        // Mock implementation
-        return {
-          id,
-          name: 'Sample Place',
-          address: 'Beijing, China',
-          latitude: 39.9042,
-          longitude: 116.4074,
-          category: 'restaurant',
-          rating: 4.5
-        };
-      },
-      search: async (query, filters = {}) => {
-        // Mock implementation
-        return {
-          places: [
-            {
-              id: 1,
-              name: 'Sample Restaurant',
-              address: 'Beijing, China',
-              latitude: 39.9042,
-              longitude: 116.4074,
-              category: 'restaurant',
-              rating: 4.5
-            }
-          ],
-          total: 1
-        };
-      }
-    };
+  async _configureDependencies(globalContainer) {
+    // Register database components
+    this.container
+      .registerInstance('placeSequelize', this.database.sequelize)
+      .registerInstance('placeModels', this.database.models);
+
+    // Register place repository
+    this.container
+      .registerSingleton('placeRepository', async (container) => {
+        const sequelize = await container.resolve('placeSequelize');
+        const models = await container.resolve('placeModels');
+        const cacheService = await globalContainer.resolve('cacheService');
+        return new PlaceMySQLAdapter(sequelize, models, cacheService);
+      });
   }
 
   async _initializeServices() {
     // Place domain services
     this.services.place = {
       searchNearby: async (latitude, longitude, radius = 1000) => {
-        // Mock implementation
-        return await this.adapters.placeRepository.search('', {
+        const placeRepository = await this.container.resolve('placeRepository');
+        return await placeRepository.search('', {
           latitude,
           longitude,
           radius
@@ -175,7 +156,13 @@ class PlaceModule {
       },
       
       getPlaceDetails: async (placeId) => {
-        return await this.adapters.placeRepository.findById(placeId);
+        const placeRepository = await this.container.resolve('placeRepository');
+        return await placeRepository.findById(placeId);
+      },
+
+      searchPlaces: async (query, filters = {}) => {
+        const placeRepository = await this.container.resolve('placeRepository');
+        return await placeRepository.search(query, filters);
       }
     };
   }
@@ -184,7 +171,7 @@ class PlaceModule {
     this.controllers.place = {
       searchPlaces: async (req, res, next) => {
         try {
-          const { query, lat, lng, radius } = req.query;
+          const { query, lat, lng, radius, category, limit, offset } = req.query;
 
           let result;
           if (lat && lng) {
@@ -194,7 +181,11 @@ class PlaceModule {
               parseInt(radius) || 1000
             );
           } else {
-            result = await this.adapters.placeRepository.search(query || '');
+            result = await this.services.place.searchPlaces(query || '', {
+              category,
+              limit: parseInt(limit) || 20,
+              offset: parseInt(offset) || 0
+            });
           }
 
           res.json({
@@ -233,7 +224,7 @@ class PlaceModule {
 
   async _setupRoutes() {
     // Health check
-    this.router.get('/health', async (req, res) => {
+    this.router.get('/place/health', async (req, res) => {
       const health = await this.getHealthStatus();
       const statusCode = health.status === 'healthy' ? 200 : 503;
       res.status(statusCode).json({
@@ -244,9 +235,9 @@ class PlaceModule {
     });
 
     // Place routes
-    this.router.get('/search', this.controllers.place.searchPlaces);
-    this.router.get('/:placeId', this.controllers.place.getPlaceDetails);
+    this.router.get('/places/search', this.controllers.place.searchPlaces);
+    this.router.get('/places/:placeId', this.controllers.place.getPlaceDetails);
   }
 }
 
-module.exports = PlaceModule;
+module.exports = PlaceModuleBootstrap;

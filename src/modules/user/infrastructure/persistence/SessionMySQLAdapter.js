@@ -3,7 +3,7 @@ const UserSession = require('../../../core/domain/user/entities/UserSession');
 
 /**
  * MySQL Session Repository Adapter
- * Implements SessionRepository contract using MySQL/Sequelize
+ * Implements SessionRepository contract using MySQL/Sequelize for User module
  */
 class SessionMySQLAdapter extends SessionRepository {
   constructor(sequelize, models, encryptionService) {

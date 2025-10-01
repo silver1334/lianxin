@@ -4,7 +4,7 @@ const UserProfile = require('../../../core/domain/user/entities/UserProfile');
 
 /**
  * MySQL User Repository Adapter
- * Implements UserRepository contract using MySQL/Sequelize
+ * Implements UserRepository contract using MySQL/Sequelize for User module
  */
 class UserMySQLAdapter extends UserRepository {
   constructor(sequelize, models, encryptionService) {
@@ -12,8 +12,6 @@ class UserMySQLAdapter extends UserRepository {
     this.sequelize = sequelize;
     this.UserModel = models.User;
     this.UserProfileModel = models.UserProfile;
-    this.UserSettingModel = models.UserSetting;
-    this.UserPrivacySettingModel = models.UserPrivacySetting;
     this.encryptionService = encryptionService;
   }
 
@@ -23,16 +21,6 @@ class UserMySQLAdapter extends UserRepository {
         { 
           model: this.UserProfileModel, 
           as: 'profile',
-          required: false
-        },
-        { 
-          model: this.UserSettingModel, 
-          as: 'setting',
-          required: false
-        },
-        {
-          model: this.UserPrivacySettingModel,
-          as: 'privacySettings',
           required: false
         }
       ]
@@ -50,11 +38,6 @@ class UserMySQLAdapter extends UserRepository {
         { 
           model: this.UserProfileModel, 
           as: 'profile',
-          required: false
-        },
-        { 
-          model: this.UserSettingModel, 
-          as: 'setting',
           required: false
         }
       ]
@@ -255,18 +238,6 @@ class UserMySQLAdapter extends UserRepository {
         defaultProfile.toPersistence()
       );
       await this.UserProfileModel.create(profileData, { transaction });
-
-      // Create default settings
-      await this.UserSettingModel.create({
-        user_id: createdUser.id
-      }, { transaction });
-
-      // Create default privacy settings
-      await this.UserPrivacySettingModel.bulkCreate([
-        { user_id: createdUser.id, field_name: 'birth_date', visibility: 'friends' },
-        { user_id: createdUser.id, field_name: 'occupation', visibility: 'public' },
-        { user_id: createdUser.id, field_name: 'salary', visibility: 'private' }
-      ], { transaction });
 
       await transaction.commit();
 

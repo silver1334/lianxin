@@ -1,30 +1,32 @@
 const express = require('express');
-const ModuleContract = require('../../core/domain/shared/contracts/ModuleContract');
+const DependencyContainer = require('../../infrastructure/config/DependencyContainer');
 
 /**
- * Media Module
- * Bounded Context for Media Management using Hexagonal Architecture
+ * Media Module Bootstrap
+ * Self-contained bootstrap for the Media bounded context
  */
-class MediaModule extends ModuleContract {
+class MediaModuleBootstrap {
   constructor() {
-    super();
     this.name = 'MediaModule';
-    this.isInitialized = false;
-    this.dependencies = {};
-    this.controllers = {};
+    this.container = new DependencyContainer();
     this.router = express.Router();
+    this.isInitialized = false;
+    this.controllers = {};
   }
 
   /**
    * Initialize the Media Module
    */
-  async initialize(dependencies) {
+  async initialize(globalContainer) {
     if (this.isInitialized) {
       return this;
     }
 
     try {
-      this.dependencies = dependencies;
+      console.log('Initializing Media Module...');
+
+      // Configure dependencies
+      await this._configureDependencies(globalContainer);
 
       // Initialize controllers
       await this._initializeControllers();
@@ -66,7 +68,12 @@ class MediaModule extends ModuleContract {
       return {
         status: 'healthy',
         initialized: this.isInitialized,
-        capabilities: this.getCapabilities()
+        capabilities: {
+          fileUpload: true,
+          imageProcessing: true,
+          videoProcessing: false,
+          fileStorage: true
+        }
       };
 
     } catch (error) {
@@ -78,45 +85,29 @@ class MediaModule extends ModuleContract {
   }
 
   /**
-   * Check if module is ready
-   */
-  isReady() {
-    return this.isInitialized;
-  }
-
-  /**
-   * Get module status
-   */
-  getStatus() {
-    return {
-      name: this.name,
-      initialized: this.isInitialized,
-      ready: this.isReady(),
-      capabilities: this.getCapabilities()
-    };
-  }
-
-  /**
-   * Get module capabilities
-   */
-  getCapabilities() {
-    return {
-      fileUpload: true,
-      imageProcessing: true,
-      videoProcessing: false,
-      fileStorage: true
-    };
-  }
-
-  /**
    * Shutdown module
    */
   async shutdown() {
     console.log('Shutting down Media Module...');
-    this.isInitialized = false;
+    
+    try {
+      this.container.clear();
+      this.isInitialized = false;
+      
+      console.log('Media Module shut down successfully');
+    } catch (error) {
+      console.error('Error during Media Module shutdown:', error);
+      throw error;
+    }
   }
 
   // Private initialization methods
+  async _configureDependencies(globalContainer) {
+    // Media module doesn't need database, just cache for metadata
+    const cacheService = await globalContainer.resolve('cacheService');
+    this.container.registerInstance('cacheService', cacheService);
+  }
+
   async _initializeControllers() {
     this.controllers.media = {
       uploadFile: async (req, res, next) => {
@@ -161,7 +152,7 @@ class MediaModule extends ModuleContract {
 
   async _setupRoutes() {
     // Health check
-    this.router.get('/health', async (req, res) => {
+    this.router.get('/media/health', async (req, res) => {
       const health = await this.getHealthStatus();
       const statusCode = health.status === 'healthy' ? 200 : 503;
       res.status(statusCode).json({
@@ -172,9 +163,9 @@ class MediaModule extends ModuleContract {
     });
 
     // Media routes
-    this.router.post('/upload', this.controllers.media.uploadFile);
-    this.router.get('/:fileId', this.controllers.media.getFile);
+    this.router.post('/media/upload', this.controllers.media.uploadFile);
+    this.router.get('/media/:fileId', this.controllers.media.getFile);
   }
 }
 
-module.exports = MediaModule;
+module.exports = MediaModuleBootstrap;

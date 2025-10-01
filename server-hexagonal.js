@@ -9,14 +9,22 @@ const securityConfig = require("./shared/config/security.config");
 const logger = require("./shared/utils/logger.util");
 const ApiResponse = require("./shared/utils/api.response");
 
-// Hexagonal Architecture Bootstrap
-const Bootstrap = require("./src/infrastructure/config/Bootstrap");
+// Dependency Container for shared services
+const DependencyContainer = require("./src/infrastructure/config/DependencyContainer");
+
+// Shared Infrastructure Adapters
+const RedisCacheAdapter = require("./src/infrastructure/adapters/cache/RedisCacheAdapter");
+const CryptoEncryptionAdapter = require("./src/infrastructure/adapters/encryption/CryptoEncryptionAdapter");
+const InMemoryEventAdapter = require("./src/infrastructure/adapters/events/InMemoryEventAdapter");
+
+// Module Bootstraps
+const UserModuleBootstrap = require("./src/modules/user/UserModuleBootstrap");
+const MediaModuleBootstrap = require("./src/modules/media/MediaModuleBootstrap");
+const LocationModuleBootstrap = require("./src/modules/location/LocationModuleBootstrap");
+const PlaceModuleBootstrap = require("./src/modules/place/PlaceModuleBootstrap");
 
 // Legacy Redis client for backward compatibility
 const redisClient = require("./shared/libraries/cache/redis.client");
-
-// Legacy database models for backward compatibility
-const { sequelize, testConnection } = require("./services/user-service/src/models");
 
 /**
  * Hexagonal Architecture Application
@@ -28,11 +36,22 @@ class HexagonalApp {
     this.port = securityConfig.app.port;
     this.app.set("trust proxy", 1);
 
-    // Hexagonal architecture components
-    this.bootstrap = new Bootstrap();
-    this.container = null;
-    this.moduleRegistry = null;
-    this.modules = {};
+    // Global container for shared services
+    this.globalContainer = new DependencyContainer();
+    
+    // Module bootstraps
+    this.moduleBootstraps = [];
+    this.userModuleBootstrap = new UserModuleBootstrap();
+    this.mediaModuleBootstrap = new MediaModuleBootstrap();
+    this.locationModuleBootstrap = new LocationModuleBootstrap();
+    this.placeModuleBootstrap = new PlaceModuleBootstrap();
+    
+    this.moduleBootstraps = [
+      this.userModuleBootstrap,
+      this.mediaModuleBootstrap,
+      this.locationModuleBootstrap,
+      this.placeModuleBootstrap
+    ];
 
     this.setupBasicMiddleware();
   }
@@ -99,49 +118,69 @@ class HexagonalApp {
   }
 
   /**
-   * Initialize hexagonal architecture
+   * Initialize shared infrastructure and modules
    */
   async initializeArchitecture() {
     try {
-      logger.info("Initializing Hexagonal Architecture...");
+      logger.info("Initializing Modular Monolith Architecture...");
 
-      // Initialize legacy database connection
-      const isDbConnected = await testConnection();
-      if (!isDbConnected) {
-        throw new Error("Database connection failed");
-      }
-
-      // Initialize legacy Redis connection
+      // Initialize Redis connection
       await redisClient.connect();
       if (!redisClient.isReady()) {
         throw new Error("Redis connection failed");
       }
 
-      // Bootstrap hexagonal architecture
-      const { container, moduleRegistry } = await this.bootstrap.initialize(
-        securityConfig,
-        { sequelize, testConnection, ...require("./services/user-service/src/models") },
-        redisClient
-      );
+      // Initialize shared infrastructure
+      await this._initializeSharedInfrastructure();
 
-      this.container = container;
-      this.moduleRegistry = moduleRegistry;
+      // Initialize all modules
+      for (const moduleBootstrap of this.moduleBootstraps) {
+        await moduleBootstrap.initialize(this.globalContainer);
+      }
 
-      // Get module instances
-      this.modules = this.moduleRegistry.getAllModules();
-
-      logger.info("Hexagonal Architecture initialized successfully", {
-        modules: Object.keys(this.modules),
-        dependencies: this.container.getDependencyInfo(),
+      logger.info("Modular Monolith Architecture initialized successfully", {
+        modules: this.moduleBootstraps.map(m => m.name),
+        sharedServices: this.globalContainer.getDependencyInfo(),
       });
 
     } catch (error) {
-      logger.error("Hexagonal Architecture initialization failed", {
+      logger.error("Modular Monolith Architecture initialization failed", {
         error: error.message,
         stack: error.stack,
       });
       throw error;
     }
+  }
+
+  /**
+   * Initialize shared infrastructure services
+   */
+  async _initializeSharedInfrastructure() {
+    // Register shared configuration and clients
+    this.globalContainer
+      .registerInstance('config', securityConfig)
+      .registerInstance('redisClient', redisClient);
+
+    // Register shared adapters
+    this.globalContainer
+      .registerSingleton('cacheService', async (container) => {
+        const redis = await container.resolve('redisClient');
+        const config = await container.resolve('config');
+        return new RedisCacheAdapter(redis, config);
+      })
+
+      .registerSingleton('encryptionService', async (container) => {
+        const config = await container.resolve('config');
+        return new CryptoEncryptionAdapter(config);
+      })
+
+      .registerSingleton('eventPublisher', async (container) => {
+        const eventAdapter = new InMemoryEventAdapter();
+        eventAdapter.setupDefaultHandlers();
+        return eventAdapter;
+      });
+
+    logger.info("Shared infrastructure initialized");
   }
 
   /**
@@ -152,10 +191,9 @@ class HexagonalApp {
     this.setupHealthRoutes();
 
     // Mount module routes
-    this.app.use("/api/v1", this.modules.user.getRouter());
-    this.app.use("/api/v1", this.modules.location.getRouter());
-    this.app.use("/api/v1", this.modules.place.getRouter());
-    this.app.use("/api/v1", this.modules.media.getRouter());
+    for (const moduleBootstrap of this.moduleBootstraps) {
+      this.app.use("/api/v1", moduleBootstrap.getRouter());
+    }
 
     // 404 handler
     this.app.use("*", (req, res) => {
@@ -175,12 +213,29 @@ class HexagonalApp {
     // Comprehensive health check
     this.app.get("/health", async (req, res) => {
       try {
-        const health = await this.bootstrap.getHealth();
-        const statusCode = health.status === "healthy" ? 200 : 503;
+        const moduleHealthPromises = this.moduleBootstraps.map(async (moduleBootstrap) => {
+          return {
+            name: moduleBootstrap.name,
+            health: await moduleBootstrap.getHealthStatus()
+          };
+        });
 
-        ApiResponse.healthCheck(health.modules)
-          .addMetadata("architecture", "hexagonal")
-          .addMetadata("dependencies", health.dependencies)
+        const moduleHealthResults = await Promise.all(moduleHealthPromises);
+        const moduleHealth = {};
+        
+        for (const result of moduleHealthResults) {
+          moduleHealth[result.name] = result.health;
+        }
+
+        const overallHealthy = Object.values(moduleHealth).every(
+          health => health.status === 'healthy'
+        );
+
+        const statusCode = overallHealthy ? 200 : 503;
+
+        ApiResponse.healthCheck(moduleHealth)
+          .addMetadata("architecture", "modular-monolith")
+          .addMetadata("sharedServices", this.globalContainer.getDependencyInfo())
           .setStatusCode(statusCode)
           .setRequestId(req.requestId)
           .send(res);
@@ -196,7 +251,20 @@ class HexagonalApp {
     // Readiness probe
     this.app.get("/ready", async (req, res) => {
       try {
-        const moduleHealth = await this.moduleRegistry.getAllModulesHealth();
+        const moduleHealthPromises = this.moduleBootstraps.map(async (moduleBootstrap) => {
+          return {
+            name: moduleBootstrap.name,
+            health: await moduleBootstrap.getHealthStatus()
+          };
+        });
+
+        const moduleHealthResults = await Promise.all(moduleHealthPromises);
+        const moduleHealth = {};
+        
+        for (const result of moduleHealthResults) {
+          moduleHealth[result.name] = result.health;
+        }
+
         const allReady = Object.values(moduleHealth).every(
           health => health.status === "healthy"
         );
@@ -264,7 +332,7 @@ class HexagonalApp {
     ApiResponse.internalServerError(
       process.env.NODE_ENV === 'production' 
         ? 'Something went wrong' 
-        : err.message
+      architecture: "modular-monolith"
     )
       .setRequestId(req.requestId)
       .send(res);
@@ -275,9 +343,9 @@ class HexagonalApp {
    */
   async start() {
     try {
-      logger.info("Starting Hexagonal Architecture Application...");
+      logger.info("Starting Modular Monolith Application...");
 
-      // Initialize hexagonal architecture
+      // Initialize architecture
       await this.initializeArchitecture();
 
       // Setup routes after modules are initialized
@@ -285,18 +353,18 @@ class HexagonalApp {
 
       // Start HTTP server
       this.app.listen(this.port, "0.0.0.0", () => {
-        logger.info(`Hexagonal Architecture Server running on port ${this.port}`, {
+        logger.info(`Modular Monolith Server running on port ${this.port}`, {
           environment: process.env.NODE_ENV || "development",
           nodeVersion: process.version,
-          architecture: "hexagonal",
-          modules: Object.keys(this.modules),
-          dependencies: this.container.getDependencyInfo(),
+          architecture: "modular-monolith",
+          modules: this.moduleBootstraps.map(m => m.name),
+          sharedServices: this.globalContainer.getDependencyInfo(),
           timestamp: new Date().toISOString(),
         });
       });
 
     } catch (error) {
-      logger.error("Failed to start Hexagonal Architecture Application", {
+      logger.error("Failed to start Modular Monolith Application", {
         error: error.message,
         stack: error.stack,
       });
@@ -309,21 +377,25 @@ class HexagonalApp {
    * Graceful shutdown
    */
   async shutdown() {
-    logger.info("Shutting down Hexagonal Architecture Application...");
+    logger.info("Shutting down Modular Monolith Application...");
 
     try {
-      // Shutdown bootstrap (which handles module shutdown)
-      if (this.bootstrap) {
-        await this.bootstrap.shutdown();
+      // Shutdown modules in reverse order
+      const shutdownOrder = [...this.moduleBootstraps].reverse();
+      for (const moduleBootstrap of shutdownOrder) {
+        await moduleBootstrap.shutdown();
       }
 
-      // Close legacy connections
+      // Close shared connections
       if (redisClient.isReady && redisClient.isReady()) {
         await redisClient.quit();
         logger.info("Redis connection closed");
       }
 
-      logger.info("Hexagonal Architecture Application shut down successfully");
+      // Clear global container
+      this.globalContainer.clear();
+
+      logger.info("Modular Monolith Application shut down successfully");
       process.exit(0);
     } catch (error) {
       logger.error("Error during shutdown", {

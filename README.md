@@ -1,18 +1,20 @@
 # Lianxin Platform - Hexagonal Architecture Implementation
 
-A modern social media platform built with **Hexagonal Architecture** (Ports & Adapters) using Node.js, Express, and MySQL.
+A modern social media platform built with **Modular Monolith** using **Hexagonal Architecture** (Ports & Adapters) pattern with Node.js, Express, and MySQL.
 
 ## 🏗️ Architecture Overview
 
-This project implements **Hexagonal Architecture** with a **Modular Monolith** structure organized by **Bounded Contexts**. Each business domain is encapsulated in its own module with clear boundaries and contracts.
+This project implements a **Modular Monolith** using **Hexagonal Architecture** (Ports & Adapters) pattern organized by **Bounded Contexts**. Each business domain is completely self-contained with its own database, making it microservice-ready.
 
 ### Key Principles
 
 - **Hexagonal/Ports & Adapters**: Core domain logic is isolated from infrastructure concerns
 - **Dependency Injection**: All dependencies are injected via interfaces/contracts
-- **Modular Monolith**: Each business domain is a self-contained module
+- **Modular Monolith**: Each business domain is a completely self-contained module with its own database
 - **Event-Driven Architecture**: Modules communicate via domain events
 - **Contract-Based Design**: All adapters implement well-defined contracts
+- **Database per Module**: Each module has its own dedicated database for true isolation
+- **Module Bootstrap**: Each module manages its own lifecycle and dependencies
 
 ## 📁 Project Structure
 
@@ -31,7 +33,6 @@ src/
 │           └── services/           # Application services
 ├── infrastructure/                 # Infrastructure layer
 │   ├── adapters/                   # Concrete implementations
-│   │   ├── persistence/            # Database adapters
 │   │   ├── cache/                  # Cache adapters
 │   │   ├── encryption/             # Encryption adapters
 │   │   ├── events/                 # Event adapters
@@ -40,9 +41,26 @@ src/
 │   └── config/                     # Configuration
 └── modules/                        # Bounded context modules
     ├── user/                       # User module
+     │   ├── infrastructure/         # User module infrastructure
+     │   │   └── persistence/        # User module persistence
+     │   │       ├── db.config.js    # User database configuration
+     │   │       ├── models/         # User database models
+     │   │       ├── UserMySQLAdapter.js # User repository adapter
+     │   │       └── SessionMySQLAdapter.js # Session repository adapter
+     │   ├── controllers/            # User controllers
+     │   ├── middleware/             # User middleware
+     │   └── UserModuleBootstrap.js  # User module bootstrap
     ├── location/                   # Location module
+     │   └── LocationModuleBootstrap.js # Location module bootstrap
     ├── place/                      # Place module
+     │   ├── infrastructure/         # Place module infrastructure
+     │   │   └── persistence/        # Place module persistence
+     │   │       ├── db.config.js    # Place database configuration
+     │   │       ├── models/         # Place database models
+     │   │       └── PlaceMySQLAdapter.js # Place repository adapter
+     │   └── PlaceModuleBootstrap.js # Place module bootstrap
     └── media/                      # Media module
+         └── MediaModuleBootstrap.js # Media module bootstrap
 ```
 
 ## 🚀 Getting Started
@@ -72,10 +90,11 @@ src/
    # Edit .env with your configuration
    ```
 
-4. **Set up the database**
+4. **Set up the databases**
    ```bash
-   # Create database and run migrations
-   npm run db:migrate
+   # Create databases for each module
+   mysql -u root -p -e "CREATE DATABASE lianxin_user_db;"
+   mysql -u root -p -e "CREATE DATABASE lianxin_place_db;"
    ```
 
 5. **Start Redis server**
@@ -90,11 +109,6 @@ src/
 node server-hexagonal.js
 ```
 
-#### Legacy Mode (for comparison)
-```bash
-node server.js
-```
-
 #### Using Docker
 ```bash
 # Development
@@ -106,13 +120,27 @@ make prod
 
 ## 🔧 Configuration
 
-The application uses environment variables for configuration. Key settings include:
+### Global Configuration
+
+Shared configuration is managed in `shared/config/security.config.js`:
 
 - **Database**: MySQL connection settings
 - **Redis**: Cache and session storage
 - **JWT**: Token signing and validation
 - **Encryption**: Data encryption keys
 - **OTP**: SMS/OTP service configuration
+
+### Module-Specific Configuration
+
+Each module with a database has its own `db.config.js`:
+
+- **User Module**: `src/modules/user/infrastructure/persistence/db.config.js`
+- **Place Module**: `src/modules/place/infrastructure/persistence/db.config.js`
+
+This allows each module to:
+- Connect to its own dedicated database
+- Use different database servers if needed
+- Be easily extracted as a microservice
 
 ## 📚 API Documentation
 
@@ -138,6 +166,11 @@ The application uses environment variables for configuration. Key settings inclu
 - `GET /ready` - Readiness probe
 - `GET /live` - Liveness probe
 
+### Module Health Endpoints
+
+- `GET /api/v1/user/health` - User module health
+- `GET /api/v1/place/health` - Place module health
+
 ## 🏛️ Architecture Components
 
 ### Domain Layer
@@ -161,17 +194,23 @@ The application uses environment variables for configuration. Key settings inclu
 ### Infrastructure Layer
 
 **Adapters**: Concrete implementations of contracts
-- `UserMySQLAdapter` - MySQL user repository
 - `RedisCacheAdapter` - Redis caching
 - `CryptoEncryptionAdapter` - Node.js crypto encryption
+- `InMemoryEventAdapter` - In-memory event publishing
 
-### Module Layer
+### Module Infrastructure
 
-**Modules**: Self-contained bounded contexts
-- `UserModule` - Authentication and user management
-- `LocationModule` - Location services
-- `PlaceModule` - Place management
-- `MediaModule` - File upload and processing
+Each module has its own infrastructure layer:
+- `UserMySQLAdapter` - MySQL user repository (in user module)
+- `SessionMySQLAdapter` - MySQL session repository (in user module)
+- `PlaceMySQLAdapter` - MySQL place repository (in place module)
+
+### Module Bootstraps
+
+Each module has its own bootstrap class:
+- `UserModuleBootstrap` - User module lifecycle management
+- `RedisCacheAdapter` - Redis caching
+- `CryptoEncryptionAdapter` - Node.js crypto encryption
 
 ## 🔒 Security Features
 
@@ -200,6 +239,12 @@ npm run test:integration
 npm run test:contracts
 ```
 
+### Module-Specific Tests
+```bash
+npm run test:user     # Test user module
+npm run test:place    # Test place module
+```
+
 ## 📊 Monitoring & Health Checks
 
 The application provides comprehensive health monitoring:
@@ -207,12 +252,12 @@ The application provides comprehensive health monitoring:
 - **Module Health**: Individual module status
 - **Database Health**: Connection and query performance
 - **Cache Health**: Redis connectivity and performance
-- **Dependency Health**: All injected dependencies
+- **Shared Services Health**: Global dependency status
 
 Access health information at:
 - `GET /health` - Full system health
 - `GET /api/v1/user/health` - User module health
-- `GET /api/v1/location/health` - Location module health
+- `GET /api/v1/place/health` - Place module health
 
 ## 🔄 Event-Driven Architecture
 
@@ -227,6 +272,18 @@ The system uses domain events for loose coupling:
 ### Session Events
 - `SessionRevoked` - Session terminated
 - `SessionRefreshTokenUpdated` - Token refreshed
+
+## 🚀 Microservice Extraction
+
+Each module is designed to be easily extracted as a microservice:
+
+1. **Copy Module**: Copy the entire module directory
+2. **Extract Dependencies**: Copy related domain and application layers
+3. **Create Microservice Server**: Create a new server that only initializes the module
+4. **Database**: Module already has its own database configuration
+5. **Replace with HTTP Client**: Replace module calls with HTTP requests
+
+The modular design ensures minimal changes are needed for microservice extraction.
 
 ## 🚀 Deployment
 
@@ -243,11 +300,14 @@ docker-compose up -d
 ```env
 NODE_ENV=production
 PORT=3000
+
+# Database settings (shared host, different databases per module)
 DB_HOST=localhost
 DB_PORT=3306
-DB_NAME=lianxin
 DB_USER=root
 DB_PASS=password
+
+# Shared services
 REDIS_URL=redis://localhost:6379
 JWT_ACCESS_SECRET=your-access-secret
 JWT_REFRESH_SECRET=your-refresh-secret
@@ -262,6 +322,14 @@ ENCRYPTION_MASTER_KEY=your-encryption-key
 4. Push to the branch (`git push origin feature/amazing-feature`)
 5. Open a Pull Request
 
+### Module Development
+
+When adding a new module:
+1. Create module directory under `src/modules/`
+2. Create module bootstrap class
+3. Add database configuration if needed
+4. Register module in `server-hexagonal.js`
+
 ## 📄 License
 
 This project is licensed under the MIT License - see the [LICENSE](LICENSE) file for details.
@@ -271,3 +339,4 @@ This project is licensed under the MIT License - see the [LICENSE](LICENSE) file
 - Hexagonal Architecture pattern by Alistair Cockburn
 - Domain-Driven Design principles by Eric Evans
 - Clean Architecture concepts by Robert C. Martin
+- Modular Monolith patterns by Simon Brown

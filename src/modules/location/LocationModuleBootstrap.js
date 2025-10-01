@@ -1,30 +1,32 @@
 const express = require('express');
-const ModuleContract = require('../../core/domain/shared/contracts/ModuleContract');
+const DependencyContainer = require('../../infrastructure/config/DependencyContainer');
 
 /**
- * Location Module
- * Bounded Context for Location Services using Hexagonal Architecture
+ * Location Module Bootstrap
+ * Self-contained bootstrap for the Location bounded context
  */
-class LocationModule extends ModuleContract {
+class LocationModuleBootstrap {
   constructor() {
-    super();
     this.name = 'LocationModule';
-    this.isInitialized = false;
-    this.dependencies = {};
-    this.controllers = {};
+    this.container = new DependencyContainer();
     this.router = express.Router();
+    this.isInitialized = false;
+    this.controllers = {};
   }
 
   /**
    * Initialize the Location Module
    */
-  async initialize(dependencies) {
+  async initialize(globalContainer) {
     if (this.isInitialized) {
       return this;
     }
 
     try {
-      this.dependencies = dependencies;
+      console.log('Initializing Location Module...');
+
+      // Configure dependencies
+      await this._configureDependencies(globalContainer);
 
       // Initialize controllers
       await this._initializeControllers();
@@ -66,7 +68,12 @@ class LocationModule extends ModuleContract {
       return {
         status: 'healthy',
         initialized: this.isInitialized,
-        capabilities: this.getCapabilities()
+        capabilities: {
+          geocoding: true,
+          reverseGeocoding: true,
+          distanceCalculation: true,
+          locationSearch: true
+        }
       };
 
     } catch (error) {
@@ -78,45 +85,29 @@ class LocationModule extends ModuleContract {
   }
 
   /**
-   * Check if module is ready
-   */
-  isReady() {
-    return this.isInitialized;
-  }
-
-  /**
-   * Get module status
-   */
-  getStatus() {
-    return {
-      name: this.name,
-      initialized: this.isInitialized,
-      ready: this.isReady(),
-      capabilities: this.getCapabilities()
-    };
-  }
-
-  /**
-   * Get module capabilities
-   */
-  getCapabilities() {
-    return {
-      geocoding: true,
-      reverseGeocoding: true,
-      distanceCalculation: true,
-      locationSearch: true
-    };
-  }
-
-  /**
    * Shutdown module
    */
   async shutdown() {
     console.log('Shutting down Location Module...');
-    this.isInitialized = false;
+    
+    try {
+      this.container.clear();
+      this.isInitialized = false;
+      
+      console.log('Location Module shut down successfully');
+    } catch (error) {
+      console.error('Error during Location Module shutdown:', error);
+      throw error;
+    }
   }
 
   // Private initialization methods
+  async _configureDependencies(globalContainer) {
+    // Location module uses cache for geocoding results
+    const cacheService = await globalContainer.resolve('cacheService');
+    this.container.registerInstance('cacheService', cacheService);
+  }
+
   async _initializeControllers() {
     this.controllers.location = {
       geocode: async (req, res, next) => {
@@ -172,7 +163,7 @@ class LocationModule extends ModuleContract {
 
   async _setupRoutes() {
     // Health check
-    this.router.get('/health', async (req, res) => {
+    this.router.get('/location/health', async (req, res) => {
       const health = await this.getHealthStatus();
       const statusCode = health.status === 'healthy' ? 200 : 503;
       res.status(statusCode).json({
@@ -183,9 +174,9 @@ class LocationModule extends ModuleContract {
     });
 
     // Location routes
-    this.router.get('/geocode', this.controllers.location.geocode);
-    this.router.get('/reverse-geocode', this.controllers.location.reverseGeocode);
+    this.router.get('/location/geocode', this.controllers.location.geocode);
+    this.router.get('/location/reverse-geocode', this.controllers.location.reverseGeocode);
   }
 }
 
-module.exports = LocationModule;
+module.exports = LocationModuleBootstrap;
